@@ -1,65 +1,180 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import { useState, useEffect } from 'react';
+
+interface TowRequest {
+  id: string;
+  status: string;
+  driverId?: {
+    id: string;
+  };
+}
+
+interface Driver {
+  id: string;
+  name: string;
+  isOnline: boolean;
+}
+
+export default function DriverDashboard() {
+  const [driver, setDriver] = useState<Driver | null>(null);
+  const [stats, setStats] = useState({ available: 0, current: 0, completed: 0 });
+  const [toggleLoading, setToggleLoading] = useState(false);
+
+  const fetchDriver = async () => {
+    try {
+      const token = localStorage.getItem('driverToken');
+      const res = await fetch('http://localhost:5000/api/drivers/me', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDriver(data);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchStats = async (currentDriverId: string) => {
+    try {
+      const res = await fetch('http://localhost:5000/api/requests');
+      const data = await res.json();
+      setStats({
+        available: data.filter((r: TowRequest) => r.status === 'pending').length,
+        current: data.filter((r: TowRequest) => (r.status === 'accepted' || r.status === 'waiting_confirmation' || r.status === 'disputed') && r.driverId?.id === currentDriverId).length,
+        completed: data.filter((r: TowRequest) => r.status === 'completed' && r.driverId?.id === currentDriverId).length,
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const token = localStorage.getItem('driverToken');
+        const res = await fetch('http://localhost:5000/api/drivers/me', {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        });
+        if (res.ok) {
+          const d = await res.json();
+          setDriver(d);
+          fetchStats(d.id);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    init();
+    const interval = setInterval(() => {
+      if (driver) fetchStats(driver.id);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [driver?.id]);
+
+  const toggleAvailability = async () => {
+    if (!driver) return;
+    setToggleLoading(true);
+    try {
+      const token = localStorage.getItem('driverToken');
+      let currentLocation = undefined;
+
+      // Only attempt to detect location if the driver is going online
+      if (!driver.isOnline) {
+        try {
+          const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+              enableHighAccuracy: false,
+              timeout: 4000,
+              maximumAge: 0
+            });
+          });
+          currentLocation = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude
+          };
+        } catch (geoErr) {
+          console.warn("Geolocation detection failed or timed out. Falling back to default coordinate (New York center) for testing:", geoErr);
+          // Set a default mock location for demo and test environments
+          currentLocation = {
+            latitude: 40.7128,
+            longitude: -74.0060
+          };
+        }
+      }
+
+      console.log(`[ToggleAvailability] Triggering status update. Going from isOnline=${driver.isOnline} to isOnline=${!driver.isOnline}. currentLocation:`, currentLocation);
+
+      await fetch(`http://localhost:5000/api/drivers/${driver.id}/status`, {
+        method: 'PATCH',
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ 
+          isOnline: !driver.isOnline,
+          currentLocation
+        }),
+      });
+      console.log(`[ToggleAvailability] Status update request completed successfully.`);
+      // Explicitly refetch driver status from server
+      await fetchDriver();
+    } catch (err) {
+      console.error("[ToggleAvailability] Error in status toggle availability:", err);
+    } finally {
+      setToggleLoading(false);
+    }
+  };
+
+  const isEngaged = stats.current > 0;
+
+  if (!driver) return <div className="container">Loading Dashboard...</div>;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="container">
+      <div className="status-panel">
+        <div className="status-indicator">
+          <span className={`dot ${isEngaged ? 'dot-engaged' : (driver.isOnline ? 'dot-online' : 'dot-offline')}`}></span>
+          <span>{isEngaged ? 'ENGAGED' : (driver.isOnline ? 'ONLINE' : 'OFFLINE')}</span>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+        {!isEngaged && (
+          <button 
+            onClick={toggleAvailability} 
+            className={`toggle-btn ${driver.isOnline ? 'btn-offline' : 'btn-online'}`}
+            disabled={toggleLoading}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            {toggleLoading ? 'Updating...' : (driver.isOnline ? 'Go Offline' : 'Go Online')}
+          </button>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px', marginTop: '30px' }}>
+        <div className="job-card" style={{ borderLeftColor: 'var(--warning-yellow)', textAlign: 'center' }}>
+          <h4>Available</h4>
+          <p style={{ fontSize: '2rem', fontWeight: 'bold' }}>{stats.available}</p>
+          <a href="/active" style={{ fontSize: '0.8rem', color: 'blue', textDecoration: 'none' }}>View Jobs</a>
         </div>
-      </main>
-    </div>
+        <div className="job-card" style={{ borderLeftColor: 'var(--driver-primary)', textAlign: 'center' }}>
+          <h4>My Active Jobs</h4>
+          <p style={{ fontSize: '2rem', fontWeight: 'bold' }}>{stats.current}</p>
+          <a href="/current" style={{ fontSize: '0.8rem', color: 'blue', textDecoration: 'none' }}>Go to Job</a>
+        </div>
+        <div className="job-card" style={{ borderLeftColor: '#333', textAlign: 'center' }}>
+          <h4>Completed</h4>
+          <p style={{ fontSize: '2rem', fontWeight: 'bold' }}>{stats.completed}</p>
+          <a href="/history" style={{ fontSize: '0.8rem', color: 'blue', textDecoration: 'none' }}>History</a>
+        </div>
+      </div>
+
+      <div className="card" style={{ background: 'white', padding: '30px', borderRadius: '12px', marginTop: '30px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
+        <h3>Welcome back, {driver.name}!</h3>
+        <p style={{ marginTop: '10px', color: '#666' }}>
+          {driver.isOnline 
+            ? "You are currently online and visible to customers. Keep an eye on the 'Available Jobs' tab for new requests." 
+            : "You are currently offline. You won't receive any new job notifications until you go online."}
+        </p>
+      </div>
+    </main>
   );
 }
